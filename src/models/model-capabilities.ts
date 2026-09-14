@@ -51,9 +51,17 @@ export function parseTokenLimit(value: string | undefined): number | undefined {
   return Math.round(amount * multiplier);
 }
 
+function readTooltipMarkdown(source: Record<string, unknown> | undefined): string | undefined {
+  const tooltip = asRecord(source?.tooltipData);
+  return typeof tooltip?.markdownContent === "string"
+    ? tooltip.markdownContent
+    : undefined;
+}
+
 export function inferAvailableContextWindow(
   model: Record<string, unknown>,
   variantContext?: string,
+  variant?: Record<string, unknown>,
 ): number {
   const fromVariant = parseTokenLimit(variantContext);
   if (fromVariant) return fromVariant;
@@ -61,12 +69,10 @@ export function inferAvailableContextWindow(
   const maxModeLimit = positiveNumber(model.contextTokenLimitForMaxMode);
   if (maxModeLimit) return maxModeLimit;
 
-  const tooltip = asRecord(model.tooltipData);
-  const fromTooltip = parseContextFromTooltip(
-    typeof tooltip?.markdownContent === "string"
-      ? tooltip.markdownContent
-      : undefined,
-  );
+  const fromVariantTooltip = parseContextFromTooltip(readTooltipMarkdown(variant));
+  if (fromVariantTooltip) return fromVariantTooltip;
+
+  const fromTooltip = parseContextFromTooltip(readTooltipMarkdown(model));
   if (fromTooltip) return fromTooltip;
 
   return DEFAULT_CONTEXT_WINDOW;

@@ -142,12 +142,14 @@ export function normalizeAvailableModels(models: readonly unknown[]): CursorMode
         parameters,
         maxMode: variant.isMaxMode === true,
       };
+      const inferredContext = inferAvailableContextWindow(model, context, variant);
       const group = groups.get(groupKey) ?? {
         id: groupId,
         name: groupName,
-        contextWindow: inferAvailableContextWindow(model, context),
+        contextWindow: inferredContext,
         selections: [],
       };
+      group.contextWindow = Math.max(group.contextWindow, inferredContext);
       group.selections.push({
         effort,
         isDefault:

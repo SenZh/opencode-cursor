@@ -793,6 +793,33 @@ async function testAvailableModelParameterGrouping(modules: TestModules) {
     "Expected contextTokenLimitForMaxMode when variant context is absent",
   );
 
+  const variantTooltipModels = modules.normalizeAvailableModels([
+    {
+      name: "gemini-3.8-flash",
+      serverModelName: "gemini-3.8-flash",
+      clientDisplayName: "Gemini 3.8 Flash",
+      supportsImages: true,
+      parameterDefinitions: [
+        enumParameter("reasoning_effort", [{ value: "high" }]),
+      ],
+      variants: [
+        {
+          parameterValues: [{ id: "reasoning_effort", value: "high" }],
+          legacySlug: "gemini-3.8-flash-high",
+          tooltipData: {
+            markdownContent:
+              "**Gemini 3.8 Flash**<br />Great for daily use.<br /><br />1M context window",
+          },
+        },
+      ],
+    },
+  ]);
+  assertEqual(
+    variantTooltipModels[0]!.contextWindow,
+    1_000_000,
+    "Expected variant tooltip context window parsing",
+  );
+
   const { buildConfigModelEntries } = await import(
     "../src/provider/model-descriptor"
   );

@@ -155,6 +155,7 @@ export function buildConfigModelEntries(
       // reasoning output and routing are handled by the local proxy.
       reasoning: false,
       tool_call: true,
+      attachment: true,
       // Required for OpenCode's static config path: without modalities.input
       // including "image", attachments are stripped before they reach the proxy.
       modalities: {
@@ -198,6 +199,7 @@ export function buildConfigModelEntries(
       name: `Default (${defaultModel.name})`,
       reasoning: false,
       tool_call: true,
+      attachment: true,
       modalities: {
         input: defaultInputModalities,
         output: ["text"],
