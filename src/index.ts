@@ -211,8 +211,8 @@ async function setupV2(ctx: any): Promise<void> {
         throw new Error("Cursor proxy is not authenticated yet");
       }, modelCatalog);
       baseURL = `http://localhost:${port}/v1`;
-    } catch (e) {
-      // proxy 启动异常容错
+    } catch (e: any) {
+      console.warn("[opencode-cursor] startProxy failed during setupV2:", e?.message || e);
     }
   }
 
@@ -228,6 +228,8 @@ async function setupV2(ctx: any): Promise<void> {
             p.package = p.package || "aisdk:@ai-sdk/openai-compatible";
             p.settings = p.settings || {};
             p.settings.baseURL = baseURL;
+            p.options = p.options || {};
+            p.options.baseURL = baseURL;
           });
         }
 

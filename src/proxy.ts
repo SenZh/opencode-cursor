@@ -13,6 +13,7 @@
  * HTTP/2 transport is delegated to a Node child process (h2-bridge.mjs)
  * because Bun's node:http2 module is broken.
  */
+import http from "node:http";
 import { create, fromBinary, fromJson, type JsonValue, toBinary, toJson } from "@bufbuild/protobuf";
 import { ValueSchema } from "@bufbuild/protobuf/wkt";
 import {
@@ -615,7 +616,12 @@ function spawnBridge(options: SpawnBridgeOptions): {
   };
 }
 
-let proxyServer: ReturnType<typeof Bun.serve> | undefined;
+interface ProxyServerHandle {
+  port: number;
+  stop: () => void;
+}
+
+let proxyServer: ProxyServerHandle | undefined;
 let proxyPort: number | undefined;
 let proxyAccessTokenProvider: (() => Promise<string>) | undefined;
 let proxyModels: Array<{ id: string; name: string }> = [];
@@ -677,10 +683,7 @@ export async function startProxy(
   }
 
   const listenPort = preferredProxyPort();
-  proxyServer = Bun.serve({
-    port: listenPort,
-    idleTimeout: 255, // max — Cursor responses can take 30s+
-    async fetch(req) {
+  const handleFetch = async (req: Request): Promise<Response> => {
       const url = new URL(req.url);
 
       // Fast-path: admission control BEFORE incrementing activeRequestCount.
@@ -821,8 +824,92 @@ export async function startProxy(
         activeRequestCount = Math.max(0, activeRequestCount - 1);
         runMaintenanceSweep();
       }
-    },
-  });
+    };
+
+  if (typeof Bun !== "undefined" && typeof (Bun as any).serve === "function") {
+    const bunServer = (Bun as any).serve({
+      port: listenPort,
+      idleTimeout: 255,
+      fetch: handleFetch,
+    });
+    proxyServer = {
+      port: bunServer.port,
+      stop: () => bunServer.stop(),
+    };
+  } else {
+    // Universal Node.js HTTP Server fallback
+    const nodeHttpServer = http.createServer(async (nodeReq, nodeRes) => {
+      try {
+        const chunks: Buffer[] = [];
+        for await (const chunk of nodeReq) {
+          chunks.push(Buffer.from(chunk));
+        }
+        const body = ["GET", "HEAD"].includes(nodeReq.method || "GET") ? null : Buffer.concat(chunks);
+        const host = nodeReq.headers.host || "127.0.0.1";
+        const url = `http://${host}${nodeReq.url}`;
+
+        const headers = new Headers();
+        for (const [key, value] of Object.entries(nodeReq.headers)) {
+          if (Array.isArray(value)) {
+            for (const v of value) headers.append(key, v);
+          } else if (value !== undefined) {
+            headers.set(key, value);
+          }
+        }
+
+        const webReq = new Request(url, {
+          method: nodeReq.method,
+          headers,
+          body,
+        });
+
+        const webRes = await handleFetch(webReq);
+
+        nodeRes.statusCode = webRes.status;
+        webRes.headers.forEach((val, key) => nodeRes.setHeader(key, val));
+
+        if (webRes.body) {
+          const reader = webRes.body.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            nodeRes.write(value);
+          }
+          nodeRes.end();
+        } else {
+          nodeRes.end();
+        }
+      } catch (err: any) {
+        if (!nodeRes.headersSent) {
+          nodeRes.statusCode = 500;
+          nodeRes.setHeader("Content-Type", "application/json");
+          nodeRes.end(JSON.stringify({ error: { message: err?.message || String(err) } }));
+        }
+      }
+    });
+
+    const bindPort = await new Promise<number>((resolve, reject) => {
+      nodeHttpServer.listen(listenPort, "127.0.0.1", () => {
+        const addr = nodeHttpServer.address() as any;
+        resolve(addr?.port || listenPort);
+      });
+      nodeHttpServer.on("error", (err: any) => {
+        if (err.code === "EADDRINUSE" && listenPort !== 0) {
+          nodeHttpServer.listen(0, "127.0.0.1", () => {
+            const addr = nodeHttpServer.address() as any;
+            resolve(addr?.port || 0);
+          });
+        } else {
+          reject(err);
+        }
+      });
+    });
+
+    proxyServer = {
+      port: bindPort,
+      stop: () => nodeHttpServer.close(),
+    };
+  }
 
   maintenanceTimer = setInterval(runMaintenanceSweep, MAINTENANCE_INTERVAL_MS);
 
