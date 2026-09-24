@@ -220,8 +220,37 @@ async function setupV2(ctx: any): Promise<void> {
   if (ctx.provider && typeof ctx.provider.transform === "function") {
     ctx.provider.transform((providers: any) => {
       try {
-        // 如果 provider map 存在该对象
-        if (providers && typeof providers === "object") {
+        // V2 Editor 模式: providers.update
+        if (typeof providers.update === "function") {
+          providers.update(CURSOR_PROVIDER_ID, (p: any) => {
+            p.name = p.name || "Cursor";
+            p.activation = "enabled";
+            p.package = p.package || "aisdk:@ai-sdk/openai-compatible";
+            p.settings = p.settings || {};
+            p.settings.baseURL = baseURL;
+          });
+        }
+
+        // V2 Editor 模式: providers.models.update
+        if (providers?.models && typeof providers.models.update === "function") {
+          for (const m of modelCatalog) {
+            providers.models.update(CURSOR_PROVIDER_ID, m.id, (modelDef: any) => {
+              modelDef.name = m.name || m.id;
+              if (m.contextWindow || m.maxTokens) {
+                modelDef.limit = {
+                  context: m.contextWindow,
+                  output: m.maxTokens,
+                };
+              }
+              if (m.reasoning !== undefined) {
+                modelDef.reasoning = m.reasoning;
+              }
+            });
+          }
+        }
+
+        // 对象/字典模式兜底
+        if (providers && typeof providers === "object" && !providers.update) {
           const existing = providers[CURSOR_PROVIDER_ID] || {};
           const existingOptions = existing.options || existing.settings || {};
           const existingModels = existing.models || {};
@@ -254,24 +283,6 @@ async function setupV2(ctx: any): Promise<void> {
             },
             models: modelMap,
           };
-        }
-
-        // 如果支持细粒度 update
-        if (providers?.models && typeof providers.models.update === "function") {
-          for (const m of modelCatalog) {
-            providers.models.update(CURSOR_PROVIDER_ID, m.id, (modelDef: any) => {
-              modelDef.name = m.name || m.id;
-              if (m.contextWindow || m.maxTokens) {
-                modelDef.limit = {
-                  context: m.contextWindow,
-                  output: m.maxTokens,
-                };
-              }
-              if (m.reasoning !== undefined) {
-                modelDef.reasoning = m.reasoning;
-              }
-            });
-          }
         }
       } catch (err) {}
     });
