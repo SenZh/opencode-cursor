@@ -242,8 +242,21 @@ async function setupV2(ctx: any): Promise<void> {
           });
         }
 
-        // V2 Editor 模式: providers.models.update
-        if (providers?.models && typeof providers.models.update === "function") {
+        // V2 Editor 模式: 优先使用 providers.models.set 完整注入所有动态模型！
+        if (providers?.models && typeof providers.models.set === "function") {
+          const modelEntries: Record<string, any> = {};
+          for (const m of modelCatalog) {
+            modelEntries[m.id] = {
+              name: m.name || m.id,
+              limit: {
+                context: m.contextWindow || 200000,
+                output: m.maxTokens || 64000,
+              },
+              reasoning: m.reasoning,
+            };
+          }
+          providers.models.set(CURSOR_PROVIDER_ID, modelEntries);
+        } else if (providers?.models && typeof providers.models.update === "function") {
           for (const m of modelCatalog) {
             providers.models.update(CURSOR_PROVIDER_ID, m.id, (modelDef: any) => {
               modelDef.name = m.name || m.id;

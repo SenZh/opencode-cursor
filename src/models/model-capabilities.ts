@@ -66,6 +66,9 @@ export function inferAvailableContextWindow(
   const fromVariant = parseTokenLimit(variantContext);
   if (fromVariant) return fromVariant;
 
+  const standardLimit = positiveNumber(model.contextTokenLimit);
+  if (standardLimit) return standardLimit;
+
   const maxModeLimit = positiveNumber(model.contextTokenLimitForMaxMode);
   if (maxModeLimit) return maxModeLimit;
 
@@ -74,6 +77,11 @@ export function inferAvailableContextWindow(
 
   const fromTooltip = parseContextFromTooltip(readTooltipMarkdown(model));
   if (fromTooltip) return fromTooltip;
+
+  const fromDisplayName = parseContextFromTooltip(
+    typeof model.clientDisplayName === "string" ? model.clientDisplayName : undefined,
+  );
+  if (fromDisplayName) return fromDisplayName;
 
   return DEFAULT_CONTEXT_WINDOW;
 }
