@@ -1,8 +1,13 @@
-import { resolve as pathResolve } from "node:path";
+import { dirname, resolve as pathResolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __currentDir = typeof import.meta.dir === "string"
+  ? import.meta.dir
+  : dirname(fileURLToPath(import.meta.url));
 
 export const CURSOR_API_URL =
   process.env.CURSOR_API_URL ?? "https://api2.cursor.sh";
-export const BRIDGE_PATH = pathResolve(import.meta.dir, "h2-bridge.mjs");
+export const BRIDGE_PATH = pathResolve(__currentDir, "h2-bridge.mjs");
 
 function lpEncode(data: Uint8Array): Buffer {
   const buffer = Buffer.alloc(4 + data.length);

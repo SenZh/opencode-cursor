@@ -3255,6 +3255,56 @@ async function testPostToolPreOutputStallBudget(
   console.log("[test] Post-tool pre-output stall budget OK");
 }
 
+async function testOpenCodeV2SetupExport() {
+  console.log("[test] Testing OpenCode 2.0 setup export...");
+  const v2Export = (await import("../src/index.js")).default as any;
+  if (!v2Export || typeof v2Export !== "object") {
+    throw new Error("Expected default export to be an object conforming to OpenCode 2.0 Plugin Schema");
+  }
+  if (v2Export.id !== "cursor") {
+    throw new Error(`Expected v2Export.id to be 'cursor', got '${v2Export.id}'`);
+  }
+  if (typeof v2Export.setup !== "function") {
+    throw new Error("Expected v2Export.setup to be a function");
+  }
+  if (typeof v2Export.server !== "function") {
+    throw new Error("Expected v2Export.server to be a function for V1 compatibility");
+  }
+
+  // Mock OpenCode 2.0 context
+  let transformCalled = false;
+  let providerMap: any = null;
+  const sessionHooks: Record<string, Function> = {};
+
+  const mockCtx = {
+    provider: {
+      transform: (fn: (providers: any) => void) => {
+        transformCalled = true;
+        providerMap = {};
+        fn(providerMap);
+      },
+    },
+    session: {
+      hook: (event: string, fn: Function) => {
+        sessionHooks[event] = fn;
+      },
+    },
+  };
+
+  await v2Export.setup(mockCtx);
+
+  if (!transformCalled || !providerMap) {
+    throw new Error("Expected ctx.provider.transform to be called during V2 setup");
+  }
+  if (!providerMap.cursor || !providerMap.cursor.options?.baseURL) {
+    throw new Error("Expected providerMap.cursor to be populated with baseURL");
+  }
+  if (!sessionHooks["model.request"] || !sessionHooks["context"]) {
+    throw new Error("Expected model.request and context hooks to be registered on ctx.session");
+  }
+  console.log("[test] OpenCode 2.0 setup export OK");
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -3320,6 +3370,7 @@ async function main() {
     await testTaskToolBridging(modules, backend);
     await testPreOutputStallBudgetAllowsSlowThinking(modules, backend);
     await testPostToolPreOutputStallBudget(modules, backend);
+    await testOpenCodeV2SetupExport();
     console.log("\n✓ All smoke tests passed");
     process.exit(0);
   } catch (err) {

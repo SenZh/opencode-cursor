@@ -9,9 +9,14 @@
  * across requests: after a stream completes, the worker returns to
  * the idle pool. Dead workers are replaced automatically.
  */
-import { resolve as pathResolve } from "node:path";
+import { dirname, resolve as pathResolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const PERSISTENT_BRIDGE_PATH = pathResolve(import.meta.dir, "h2-bridge-persistent.mjs");
+const __currentDir = typeof import.meta.dir === "string"
+  ? import.meta.dir
+  : dirname(fileURLToPath(import.meta.url));
+
+const PERSISTENT_BRIDGE_PATH = pathResolve(__currentDir, "h2-bridge-persistent.mjs");
 
 // --- Typed message protocol constants ---
 const IN_NEW_REQUEST = 0x00;

@@ -6,8 +6,12 @@
  * 2. Local proxy translating OpenAI format → Cursor gRPC protocol
  */
 import type { Hooks, Plugin, PluginInput } from "@opencode-ai/plugin";
+import fs from "fs";
+import path from "path";
+import os from "os";
 import {
   startCursorBrowserLogin,
+
   getPendingCursorLogin,
   waitForCursorBrowserLogin,
 } from "./auth-login.js";
@@ -178,4 +182,127 @@ function stripAuthorizationHeader(init?: RequestInit): void {
   }
 }
 
-export default CursorAuthPlugin;
+/**
+ * OpenCode 2.0 Plugin Setup Hook
+ */
+async function setupV2(ctx: any): Promise<void> {
+  let modelCatalog: CursorModel[] = [];
+  try {
+    modelCatalog = await resolveConfigModels();
+  } catch (e) {
+    // fallback
+  }
+
+  // 1. 确保启动本地 proxy
+  let baseURL = getCursorProxyBaseUrl();
+  if (!baseURL) {
+    try {
+      const port = await startProxy(async () => {
+        const home = os.homedir() || process.env.USERPROFILE || "";
+        const authPath = path.join(home, ".local", "share", "opencode", "auth.json");
+        if (fs.existsSync(authPath)) {
+          const auth = JSON.parse(fs.readFileSync(authPath, "utf8"));
+          const entry = auth[CURSOR_PROVIDER_ID];
+          if (entry) {
+            if (typeof entry === "string") return entry;
+            return entry.access || entry.token || entry.key || entry.apiKey || "";
+          }
+        }
+        throw new Error("Cursor proxy is not authenticated yet");
+      }, modelCatalog);
+      baseURL = `http://localhost:${port}/v1`;
+    } catch (e) {
+      // proxy 启动异常容错
+    }
+  }
+
+  // 2. 注入 Provider 与 Models
+  if (ctx.provider && typeof ctx.provider.transform === "function") {
+    ctx.provider.transform((providers: any) => {
+      try {
+        // 如果 provider map 存在该对象
+        if (providers && typeof providers === "object") {
+          const existing = providers[CURSOR_PROVIDER_ID] || {};
+          const existingOptions = existing.options || existing.settings || {};
+          const existingModels = existing.models || {};
+
+          const modelMap: Record<string, any> = { ...existingModels };
+          for (const m of modelCatalog) {
+            modelMap[m.id] = {
+              name: m.name || m.id,
+              limit: {
+                context: m.contextWindow || 131072,
+                output: m.maxTokens || 8192,
+              },
+              reasoning: m.reasoning,
+              ...(existingModels[m.id] || {}),
+            };
+          }
+
+          providers[CURSOR_PROVIDER_ID] = {
+            ...existing,
+            name: existing.name || "Cursor",
+            npm: existing.npm || existing.package || "@ai-sdk/openai-compatible",
+            options: {
+              ...existingOptions,
+              baseURL,
+              includeUsage: true,
+            },
+            settings: {
+              ...(existing.settings || {}),
+              baseURL,
+            },
+            models: modelMap,
+          };
+        }
+
+        // 如果支持细粒度 update
+        if (providers?.models && typeof providers.models.update === "function") {
+          for (const m of modelCatalog) {
+            providers.models.update(CURSOR_PROVIDER_ID, m.id, (modelDef: any) => {
+              modelDef.name = m.name || m.id;
+              if (m.contextWindow || m.maxTokens) {
+                modelDef.limit = {
+                  context: m.contextWindow,
+                  output: m.maxTokens,
+                };
+              }
+              if (m.reasoning !== undefined) {
+                modelDef.reasoning = m.reasoning;
+              }
+            });
+          }
+        }
+      } catch (err) {}
+    });
+  }
+
+  // 3. 挂载 Session 请求钩子
+  if (ctx.session && typeof ctx.session.hook === "function") {
+    ctx.session.hook("model.request", (event: any) => {
+      if (event?.providerID !== CURSOR_PROVIDER_ID && event?.model?.providerID !== CURSOR_PROVIDER_ID) return;
+      const modelId = event.model?.id || event.modelID;
+      const variant = typeof event.variant === "string" ? event.variant : undefined;
+      const selected = resolveCursorModelSelection(modelCatalog, modelId, variant);
+      if (selected && event.headers) {
+        event.headers[CURSOR_SELECTION_HEADER] = encodeCursorModelSelection(selected);
+      }
+    });
+
+    ctx.session.hook("context", (event: any) => {
+      if (event?.providerID !== CURSOR_PROVIDER_ID && event?.model?.providerID !== CURSOR_PROVIDER_ID) return;
+      if (event.options) {
+        delete event.options.reasoningEffort;
+        delete event.options[CURSOR_VARIANT_OPTION];
+      }
+    });
+  }
+}
+
+const pluginExport = {
+  id: "cursor",
+  setup: setupV2,
+  server: CursorAuthPlugin,
+};
+
+export default pluginExport;
