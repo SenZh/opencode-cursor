@@ -1,5 +1,6 @@
 import { dirname, resolve as pathResolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnBridgeProcess } from "./shared/spawn.js";
 
 const __currentDir = typeof import.meta.dir === "string"
   ? import.meta.dir
@@ -27,11 +28,7 @@ interface CursorUnaryRpcOptions {
 }
 
 function spawnBridge(options: CursorUnaryRpcOptions) {
-  const proc = Bun.spawn(["node", BRIDGE_PATH], {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "ignore",
-  });
+  const proc = spawnBridgeProcess(["node", BRIDGE_PATH], BRIDGE_PATH);
   proc.stdin.write(
     lpEncode(
       new TextEncoder().encode(
@@ -109,7 +106,9 @@ export async function callCursorUnaryRpc(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      pending = Buffer.concat([pending, Buffer.from(value)]);
+      if (value) {
+        pending = Buffer.concat([pending, Buffer.from(value)]);
+      }
       while (pending.length >= 4) {
         const length = pending.readUInt32BE(0);
         if (pending.length < 4 + length) break;

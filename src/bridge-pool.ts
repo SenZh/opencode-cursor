@@ -11,6 +11,7 @@
  */
 import { dirname, resolve as pathResolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnBridgeProcess, type BridgeProcess } from "./shared/spawn.js";
 
 const __currentDir = typeof import.meta.dir === "string"
   ? import.meta.dir
@@ -47,18 +48,14 @@ interface WorkerCallbacks {
 }
 
 interface PersistentWorker {
-  proc: ReturnType<typeof Bun.spawn>;
+  proc: BridgeProcess;
   cbs: WorkerCallbacks;
   /** True while the child process is still running. */
   alive: boolean;
 }
 
 function spawnWorker(): PersistentWorker {
-  const proc = Bun.spawn(["node", PERSISTENT_BRIDGE_PATH], {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "ignore",
-  });
+  const proc = spawnBridgeProcess(["node", PERSISTENT_BRIDGE_PATH], PERSISTENT_BRIDGE_PATH);
 
   const worker: PersistentWorker = {
     proc,
@@ -75,7 +72,9 @@ function spawnWorker(): PersistentWorker {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        pending = Buffer.concat([pending, Buffer.from(value)]);
+        if (value) {
+          pending = Buffer.concat([pending, Buffer.from(value)]);
+        }
 
         while (pending.length >= 5) {
           const totalLen = pending.readUInt32BE(0);
@@ -121,8 +120,7 @@ function spawnWorker(): PersistentWorker {
 function workerSend(worker: PersistentWorker, type: number, payload: Uint8Array): void {
   if (!worker.alive) return;
   try {
-    const stdin = worker.proc.stdin as import("bun").FileSink;
-    stdin.write(encodeTyped(type, payload));
+    worker.proc.stdin.write(encodeTyped(type, payload));
   } catch {
     // stdin closed — worker is dying
   }

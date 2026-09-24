@@ -528,8 +528,10 @@ interface SpawnBridgeOptions {
   url?: string;
 }
 
+import { spawnBridgeProcess, type BridgeProcess } from "./shared/spawn.js";
+
 function spawnBridge(options: SpawnBridgeOptions): {
-  proc: ReturnType<typeof Bun.spawn>;
+  proc: BridgeProcess;
   write: (data: Uint8Array) => void;
   end: () => void;
   kill: () => void;
@@ -538,11 +540,7 @@ function spawnBridge(options: SpawnBridgeOptions): {
   /** True while the bridge subprocess is still running. */
   get alive(): boolean;
 } {
-  const proc = Bun.spawn(["node", BRIDGE_PATH], {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "ignore",
-  });
+  const proc = spawnBridgeProcess(["node", BRIDGE_PATH], BRIDGE_PATH);
 
   const config = JSON.stringify({
     accessToken: options.accessToken,
@@ -568,7 +566,9 @@ function spawnBridge(options: SpawnBridgeOptions): {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        pending = Buffer.concat([pending, Buffer.from(value)]);
+        if (value) {
+          pending = Buffer.concat([pending, Buffer.from(value)]);
+        }
 
         while (pending.length >= 4) {
           const len = pending.readUInt32BE(0);
