@@ -12,6 +12,7 @@
 import { dirname, resolve as pathResolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnBridgeProcess, type BridgeProcess } from "./shared/spawn.js";
+import { log } from "./shared/log.js";
 
 const __currentDir = typeof import.meta.dir === "string"
   ? import.meta.dir
@@ -89,8 +90,10 @@ function spawnWorker(): PersistentWorker {
           pending = pending.subarray(4 + totalLen);
 
           if (type === OUT_DATA) {
+            log.info(`[bridge-pool] OUT_DATA received: ${payload.length} bytes`);
             worker.cbs.data?.(Buffer.from(payload));
           } else if (type === OUT_STREAM_DONE) {
+            log.info(`[bridge-pool] OUT_STREAM_DONE received`);
             const success = payload.length > 0 ? payload[0] === 0 : true;
             const cb = worker.cbs.streamDone;
             // Clear callbacks before firing — the worker is now idle
@@ -128,6 +131,7 @@ function workerSend(worker: PersistentWorker, type: number, payload: Uint8Array)
 
 function workerSendNewRequest(worker: PersistentWorker, config: object): void {
   const configBytes = new TextEncoder().encode(JSON.stringify(config));
+  log.info(`[bridge-pool] workerSendNewRequest: ${(config as any)?.path}`);
   workerSend(worker, IN_NEW_REQUEST, configBytes);
 }
 

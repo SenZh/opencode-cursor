@@ -857,16 +857,25 @@ export async function startProxy(
           }
         }
 
+        const abortController = new AbortController();
+        nodeReq.on("close", () => {
+          if (!nodeRes.writableEnded) {
+            abortController.abort();
+          }
+        });
+
         const webReq = new Request(url, {
           method: nodeReq.method,
           headers,
           body,
+          signal: abortController.signal,
         });
 
         const webRes = await handleFetch(webReq);
 
         nodeRes.statusCode = webRes.status;
         webRes.headers.forEach((val, key) => nodeRes.setHeader(key, val));
+        nodeRes.flushHeaders();
 
         if (webRes.body) {
           const reader = webRes.body.getReader();
@@ -874,6 +883,9 @@ export async function startProxy(
             const { done, value } = await reader.read();
             if (done) break;
             nodeRes.write(value);
+            if (typeof (nodeRes as any).flush === "function") {
+              (nodeRes as any).flush();
+            }
           }
           nodeRes.end();
         } else {
@@ -925,9 +937,20 @@ export function resolveProxyModelId(
 ): string {
   const selected = selectedModelId?.trim();
   if (selected) return selected === "auto" ? DEFAULT_MODEL_ID : selected;
-  // Cursor accepts "default" for server-side model auto-selection, but no
-  // longer accepts the older OpenCode/Cursor "auto" alias here.
-  if (modelId === "auto") return DEFAULT_MODEL_ID;
+  if (modelId === "auto" || modelId === "default") return DEFAULT_MODEL_ID;
+
+  // Aliases for historical / retired model names
+  if (
+    modelId.includes("claude-3-5-sonnet") ||
+    modelId.includes("claude-3.5-sonnet") ||
+    modelId.includes("claude-3.7-sonnet")
+  ) {
+    return "claude-4.5-sonnet";
+  }
+  if (modelId.includes("gpt-4o") || modelId.includes("gpt-4.5")) {
+    return "gpt-5.4";
+  }
+
   return modelId;
 }
 
