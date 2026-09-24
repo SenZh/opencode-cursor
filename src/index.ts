@@ -23,7 +23,9 @@ import { clearModelCache, resolveCursorModelSelection, type CursorModel } from "
 import { resolveConfigModels } from "./provider/config-models.js";
 import { loadCursorRuntime } from "./provider/credential-runtime.js";
 import { ensureCursorProviderConfig } from "./provider/provider-config.js";
-import { getCursorProxyBaseUrl, startProxy } from "./proxy.js";
+import { getCursorProxyBaseUrl, startProxy, updateProxyModels } from "./proxy.js";
+import { readStoredCursorAuth, writeStoredCursorAuth } from "./auth/opencode-auth-store.js";
+import { ensureValidAccessToken } from "./auth/credential-manager.js";
 import {
   CURSOR_PROVIDER_ID,
   CURSOR_VARIANT_OPTION,
@@ -186,34 +188,41 @@ function stripAuthorizationHeader(init?: RequestInit): void {
  * OpenCode 2.0 Plugin Setup Hook
  */
 async function setupV2(ctx: any): Promise<void> {
+  // 1. 【立即启动本地 Proxy】绝不等待耗时的模型发现，确保端口第一时间处于监听状态！
+  let baseURL = getCursorProxyBaseUrl();
+  let proxyPortNumber: number | undefined;
+
+  if (!baseURL) {
+    try {
+      proxyPortNumber = await startProxy(async () => {
+        const stored = readStoredCursorAuth();
+        if (stored) {
+          try {
+            const token = await ensureValidAccessToken({
+              auth: stored,
+              persist: writeStoredCursorAuth,
+            });
+            if (token) return token;
+          } catch {}
+          if (stored.access) return stored.access;
+        }
+        throw new Error("Cursor proxy is not authenticated yet");
+      }, []);
+      baseURL = `http://localhost:${proxyPortNumber}/v1`;
+    } catch (e: any) {
+      console.error("[opencode-cursor] Immediate startProxy failed:", e?.message || e);
+    }
+  }
+
+  // 2. 异步进行模型发现，避免阻塞服务启动
   let modelCatalog: CursorModel[] = [];
   try {
     modelCatalog = await resolveConfigModels();
+    if (modelCatalog.length > 0) {
+      updateProxyModels(modelCatalog);
+    }
   } catch (e) {
     // fallback
-  }
-
-  // 1. 确保启动本地 proxy
-  let baseURL = getCursorProxyBaseUrl();
-  if (!baseURL) {
-    try {
-      const port = await startProxy(async () => {
-        const home = os.homedir() || process.env.USERPROFILE || "";
-        const authPath = path.join(home, ".local", "share", "opencode", "auth.json");
-        if (fs.existsSync(authPath)) {
-          const auth = JSON.parse(fs.readFileSync(authPath, "utf8"));
-          const entry = auth[CURSOR_PROVIDER_ID];
-          if (entry) {
-            if (typeof entry === "string") return entry;
-            return entry.access || entry.token || entry.key || entry.apiKey || "";
-          }
-        }
-        throw new Error("Cursor proxy is not authenticated yet");
-      }, modelCatalog);
-      baseURL = `http://localhost:${port}/v1`;
-    } catch (e: any) {
-      console.warn("[opencode-cursor] startProxy failed during setupV2:", e?.message || e);
-    }
   }
 
   // 2. 注入 Provider 与 Models
@@ -312,10 +321,15 @@ async function setupV2(ctx: any): Promise<void> {
   }
 }
 
-const pluginExport = {
-  id: "cursor",
-  setup: setupV2,
-  server: CursorAuthPlugin,
-};
+const pluginExport = Object.assign(
+  async function (input: PluginInput): Promise<Hooks> {
+    return CursorAuthPlugin(input);
+  },
+  {
+    id: "cursor",
+    setup: setupV2,
+    server: CursorAuthPlugin,
+  },
+);
 
 export default pluginExport;

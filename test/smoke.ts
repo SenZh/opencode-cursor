@@ -3367,10 +3367,10 @@ async function testPostToolPreOutputStallBudget(
 }
 
 async function testOpenCodeV2SetupExport() {
-  console.log("[test] Testing OpenCode 2.0 setup export...");
+  console.log("[test] Testing OpenCode 2.0 Dual-Callable setup export...");
   const v2Export = (await import("../src/index.js")).default as any;
-  if (!v2Export || typeof v2Export !== "object") {
-    throw new Error("Expected default export to be an object conforming to OpenCode 2.0 Plugin Schema");
+  if (!v2Export || typeof v2Export !== "function") {
+    throw new Error("Expected default export to be callable for V1 backwards compatibility");
   }
   if (v2Export.id !== "cursor") {
     throw new Error(`Expected v2Export.id to be 'cursor', got '${v2Export.id}'`);
@@ -3382,7 +3382,30 @@ async function testOpenCodeV2SetupExport() {
     throw new Error("Expected v2Export.server to be a function for V1 compatibility");
   }
 
-  // Mock OpenCode 2.0 context
+  // 1. Verify V1 compatibility: calling v2Export as a function directly
+  const v1Hooks = await v2Export({
+    directory: process.cwd(),
+    project: { id: "test-proj" },
+    client: {} as any,
+  });
+  if (!v1Hooks || typeof v1Hooks.config !== "function" || !v1Hooks.auth) {
+    throw new Error("Expected v2Export(input) to return standard V1 hooks");
+  }
+
+  // 2. Verify model alias transparency: no silent model rewriting
+  const proxy = await import("../src/proxy.js");
+  assertEqual(
+    proxy.resolveProxyModelId("claude-3.5-sonnet"),
+    "claude-3.5-sonnet",
+    "Model ID must be passed through without silent rewriting",
+  );
+  assertEqual(
+    proxy.resolveProxyModelId("gpt-4o"),
+    "gpt-4o",
+    "gpt-4o must not be silently mapped to another model",
+  );
+
+  // 3. Mock OpenCode 2.0 context
   let transformCalled = false;
   let providerMap: any = null;
   const sessionHooks: Record<string, Function> = {};
@@ -3413,7 +3436,7 @@ async function testOpenCodeV2SetupExport() {
   if (!sessionHooks["model.request"] || !sessionHooks["context"]) {
     throw new Error("Expected model.request and context hooks to be registered on ctx.session");
   }
-  console.log("[test] OpenCode 2.0 setup export OK");
+  console.log("[test] OpenCode 2.0 Dual-Callable setup export OK");
 }
 
 // ---------------------------------------------------------------------------

@@ -661,6 +661,15 @@ export function getProxyPort(): number | undefined {
   return proxyPort;
 }
 
+export function updateProxyModels(
+  models: ReadonlyArray<{ id: string; name: string }>,
+): void {
+  proxyModels = models.map((model) => ({
+    id: model.id,
+    name: model.name,
+  }));
+}
+
 export async function startProxy(
   getAccessToken: () => Promise<string>,
   models: ReadonlyArray<{ id: string; name: string }> = [],
@@ -857,6 +866,9 @@ export async function startProxy(
           }
         }
 
+        // Guard against uncaught error events when destroying response stream
+        nodeRes.on("error", () => {});
+
         const abortController = new AbortController();
         nodeReq.on("close", () => {
           if (!nodeRes.writableEnded) {
@@ -879,23 +891,56 @@ export async function startProxy(
 
         if (webRes.body) {
           const reader = webRes.body.getReader();
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            nodeRes.write(value);
-            if (typeof (nodeRes as any).flush === "function") {
-              (nodeRes as any).flush();
+          try {
+            while (!abortController.signal.aborted) {
+              const { done, value } = await reader.read();
+              if (done || abortController.signal.aborted) break;
+              const ok = nodeRes.write(value);
+              if (typeof (nodeRes as any).flush === "function") {
+                (nodeRes as any).flush();
+              }
+              if (!ok && !nodeRes.writableEnded && !abortController.signal.aborted) {
+                await new Promise<void>((resolve) => {
+                  const cleanup = () => {
+                    nodeRes.off("drain", onDone);
+                    nodeRes.off("close", onDone);
+                    abortController.signal.removeEventListener("abort", onDone);
+                  };
+                  const onDone = () => {
+                    cleanup();
+                    resolve();
+                  };
+                  nodeRes.once("drain", onDone);
+                  nodeRes.once("close", onDone);
+                  abortController.signal.addEventListener("abort", onDone, { once: true });
+                });
+              }
             }
+          } catch (streamErr) {
+            reader.cancel().catch(() => {});
+            if (!nodeRes.destroyed) {
+              nodeRes.destroy();
+            }
+            return;
+          } finally {
+            reader.releaseLock();
           }
-          nodeRes.end();
+
+          if (!nodeRes.writableEnded && !nodeRes.destroyed) {
+            nodeRes.end();
+          }
         } else {
-          nodeRes.end();
+          if (!nodeRes.writableEnded && !nodeRes.destroyed) {
+            nodeRes.end();
+          }
         }
       } catch (err: any) {
         if (!nodeRes.headersSent) {
           nodeRes.statusCode = 500;
           nodeRes.setHeader("Content-Type", "application/json");
           nodeRes.end(JSON.stringify({ error: { message: err?.message || String(err) } }));
+        } else if (!nodeRes.destroyed) {
+          nodeRes.destroy();
         }
       }
     });
@@ -937,20 +982,9 @@ export function resolveProxyModelId(
 ): string {
   const selected = selectedModelId?.trim();
   if (selected) return selected === "auto" ? DEFAULT_MODEL_ID : selected;
-  if (modelId === "auto" || modelId === "default") return DEFAULT_MODEL_ID;
-
-  // Aliases for historical / retired model names
-  if (
-    modelId.includes("claude-3-5-sonnet") ||
-    modelId.includes("claude-3.5-sonnet") ||
-    modelId.includes("claude-3.7-sonnet")
-  ) {
-    return "claude-4.5-sonnet";
-  }
-  if (modelId.includes("gpt-4o") || modelId.includes("gpt-4.5")) {
-    return "gpt-5.4";
-  }
-
+  // Cursor accepts "default" for server-side model auto-selection, but no
+  // longer accepts the older OpenCode/Cursor "auto" alias here.
+  if (modelId === "auto") return DEFAULT_MODEL_ID;
   return modelId;
 }
 
