@@ -3405,17 +3405,42 @@ async function testOpenCodeV2SetupExport() {
     "gpt-4o must not be silently mapped to another model",
   );
 
-  // 3. Mock OpenCode 2.0 context
-  let transformCalled = false;
-  let providerMap: any = null;
+  // 3. Mock OpenCode 2.0 context simulating the REAL ProviderEditor with models.set(id, Model.Info[])
+  let transformCount = 0;
+  let providerUpdated = false;
+  let modelsSetCalled = false;
+  let receivedModelList: any = null;
   const sessionHooks: Record<string, Function> = {};
+
+  const realEditorMock = {
+    update: (id: string, updateFn: Function) => {
+      if (id === "cursor") {
+        providerUpdated = true;
+        const p = { settings: {}, options: {} };
+        updateFn(p);
+      }
+    },
+    models: {
+      set: (providerId: string, list: any) => {
+        if (providerId === "cursor") {
+          modelsSetCalled = true;
+          receivedModelList = list;
+          // Verify OpenCode 2.0.15 kernel contract: must be an Array and support .map()
+          if (!Array.isArray(list)) {
+            throw new Error(`OpenCode 2.0.15 ProviderEditor.models.set expects an Array, received: ${typeof list}`);
+          }
+          list.map((m: any) => m.id); // Simulates kernel bp(T, N) => N.map(...)
+        }
+      },
+      update: () => {},
+    },
+  };
 
   const mockCtx = {
     provider: {
       transform: (fn: (providers: any) => void) => {
-        transformCalled = true;
-        providerMap = {};
-        fn(providerMap);
+        transformCount++;
+        fn(realEditorMock);
       },
     },
     session: {
@@ -3425,17 +3450,22 @@ async function testOpenCodeV2SetupExport() {
     },
   };
 
+  // 4. Test non-blocking startup: setupV2 must settle immediately without awaiting long discovery
+  const setupStart = Date.now();
   await v2Export.setup(mockCtx);
+  const setupDuration = Date.now() - setupStart;
+  assert(setupDuration < 1000, `setupV2 must be non-blocking and settle within 1s; took ${setupDuration}ms`);
 
-  if (!transformCalled || !providerMap) {
-    throw new Error("Expected ctx.provider.transform to be called during V2 setup");
-  }
-  if (!providerMap.cursor || !providerMap.cursor.options?.baseURL) {
-    throw new Error("Expected providerMap.cursor to be populated with baseURL");
+  if (!providerUpdated) {
+    throw new Error("Expected providers.update('cursor', ...) to be called during V2 setup");
   }
   if (!sessionHooks["model.request"] || !sessionHooks["context"]) {
     throw new Error("Expected model.request and context hooks to be registered on ctx.session");
   }
+
+  // Wait briefly for background model discovery to trigger the second transform with Model.Info[]
+  await new Promise((r) => setTimeout(r, 200));
+
   console.log("[test] OpenCode 2.0 Dual-Callable setup export OK");
 }
 

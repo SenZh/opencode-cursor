@@ -214,22 +214,81 @@ async function setupV2(ctx: any): Promise<void> {
     }
   }
 
-  // 2. 异步进行模型发现，避免阻塞服务启动
   let modelCatalog: CursorModel[] = [];
-  try {
-    modelCatalog = await resolveConfigModels();
-    if (modelCatalog.length > 0) {
-      updateProxyModels(modelCatalog);
-    }
-  } catch (e) {
-    // fallback
-  }
 
-  // 2. 注入 Provider 与 Models
+  const applyModelsToEditor = (providers: any, catalog: CursorModel[]) => {
+    try {
+      // V2 Editor 模式: 优先使用 providers.models.set 传入 readonly Model.Info[] 数组
+      if (providers?.models && typeof providers.models.set === "function") {
+        const modelList = catalog.map((m) => ({
+          id: m.id,
+          name: m.name || m.id,
+          limit: {
+            context: m.contextWindow || 200000,
+            output: m.maxTokens || 64000,
+          },
+          reasoning: m.reasoning,
+        }));
+        providers.models.set(CURSOR_PROVIDER_ID, modelList);
+      } else if (providers?.models && typeof providers.models.update === "function") {
+        for (const m of catalog) {
+          providers.models.update(CURSOR_PROVIDER_ID, m.id, (modelDef: any) => {
+            modelDef.name = m.name || m.id;
+            if (m.contextWindow || m.maxTokens) {
+              modelDef.limit = {
+                context: m.contextWindow,
+                output: m.maxTokens,
+              };
+            }
+            if (m.reasoning !== undefined) {
+              modelDef.reasoning = m.reasoning;
+            }
+          });
+        }
+      }
+
+      // 对象/字典模式兜底 (兼容测试 Mock 或特定加载器)
+      if (providers && typeof providers === "object" && !providers.update) {
+        const existing = providers[CURSOR_PROVIDER_ID] || {};
+        const existingOptions = existing.options || existing.settings || {};
+        const existingModels = existing.models || {};
+
+        const modelMap: Record<string, any> = { ...existingModels };
+        for (const m of catalog) {
+          modelMap[m.id] = {
+            name: m.name || m.id,
+            limit: {
+              context: m.contextWindow || 131072,
+              output: m.maxTokens || 8192,
+            },
+            reasoning: m.reasoning,
+            ...(existingModels[m.id] || {}),
+          };
+        }
+
+        providers[CURSOR_PROVIDER_ID] = {
+          ...existing,
+          name: existing.name || "Cursor",
+          npm: existing.npm || existing.package || "@ai-sdk/openai-compatible",
+          options: {
+            ...existingOptions,
+            baseURL,
+            includeUsage: true,
+          },
+          settings: {
+            ...(existing.settings || {}),
+            baseURL,
+          },
+          models: modelMap,
+        };
+      }
+    } catch (err) {}
+  };
+
+  // 2. 毫秒级注册 Provider 基础信息，保证 OpenCode 启动即刻感知到 Cursor，不发生阻塞
   if (ctx.provider && typeof ctx.provider.transform === "function") {
     ctx.provider.transform((providers: any) => {
       try {
-        // V2 Editor 模式: providers.update
         if (typeof providers.update === "function") {
           providers.update(CURSOR_PROVIDER_ID, (p: any) => {
             p.name = p.name || "Cursor";
@@ -241,76 +300,27 @@ async function setupV2(ctx: any): Promise<void> {
             p.options.baseURL = baseURL;
           });
         }
-
-        // V2 Editor 模式: 优先使用 providers.models.set 完整注入所有动态模型！
-        if (providers?.models && typeof providers.models.set === "function") {
-          const modelEntries: Record<string, any> = {};
-          for (const m of modelCatalog) {
-            modelEntries[m.id] = {
-              name: m.name || m.id,
-              limit: {
-                context: m.contextWindow || 200000,
-                output: m.maxTokens || 64000,
-              },
-              reasoning: m.reasoning,
-            };
-          }
-          providers.models.set(CURSOR_PROVIDER_ID, modelEntries);
-        } else if (providers?.models && typeof providers.models.update === "function") {
-          for (const m of modelCatalog) {
-            providers.models.update(CURSOR_PROVIDER_ID, m.id, (modelDef: any) => {
-              modelDef.name = m.name || m.id;
-              if (m.contextWindow || m.maxTokens) {
-                modelDef.limit = {
-                  context: m.contextWindow,
-                  output: m.maxTokens,
-                };
-              }
-              if (m.reasoning !== undefined) {
-                modelDef.reasoning = m.reasoning;
-              }
-            });
-          }
-        }
-
-        // 对象/字典模式兜底
-        if (providers && typeof providers === "object" && !providers.update) {
-          const existing = providers[CURSOR_PROVIDER_ID] || {};
-          const existingOptions = existing.options || existing.settings || {};
-          const existingModels = existing.models || {};
-
-          const modelMap: Record<string, any> = { ...existingModels };
-          for (const m of modelCatalog) {
-            modelMap[m.id] = {
-              name: m.name || m.id,
-              limit: {
-                context: m.contextWindow || 131072,
-                output: m.maxTokens || 8192,
-              },
-              reasoning: m.reasoning,
-              ...(existingModels[m.id] || {}),
-            };
-          }
-
-          providers[CURSOR_PROVIDER_ID] = {
-            ...existing,
-            name: existing.name || "Cursor",
-            npm: existing.npm || existing.package || "@ai-sdk/openai-compatible",
-            options: {
-              ...existingOptions,
-              baseURL,
-              includeUsage: true,
-            },
-            settings: {
-              ...(existing.settings || {}),
-              baseURL,
-            },
-            models: modelMap,
-          };
+        if (modelCatalog.length > 0) {
+          applyModelsToEditor(providers, modelCatalog);
         }
       } catch (err) {}
     });
   }
+
+  // 3. 【非阻塞后台模型发现】完全脱离启动关键路径，弱网或超时决不阻塞 OpenCode 启动
+  void resolveConfigModels()
+    .then((discovered) => {
+      if (discovered && discovered.length > 0) {
+        modelCatalog = discovered;
+        updateProxyModels(discovered);
+        if (ctx.provider && typeof ctx.provider.transform === "function") {
+          ctx.provider.transform((providers: any) => {
+            applyModelsToEditor(providers, discovered);
+          });
+        }
+      }
+    })
+    .catch(() => {});
 
   // 3. 挂载 Session 请求钩子
   if (ctx.session && typeof ctx.session.hook === "function") {
